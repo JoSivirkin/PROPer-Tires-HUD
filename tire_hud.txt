@@ -1,0 +1,394 @@
+--@name Tire HUD
+--@author
+--@shared
+--@include tire_hud_config.txt
+
+--[[
+    PROPer Tires panel at the bottom of the driver's screen: one cell per wheel with
+    temperature, grip coefficient, surface and a skid bar. Cells are laid out like
+    the wheels on the vehicle seen from above, lying on its side: axles are columns,
+    the left side is the top row, the front is on the right (P.FRONT_RIGHT), and a
+    forward arrow runs between the sides.
+    To the right is the setup panel: the speed of the Base plate (P.SPEED_*) on top,
+    then the tire setup - grip slider, pressure and tread; P.MIXED if tires differ.
+    The panel adapts to the number of wheels (up to 15): one column per axle, one
+    cell per wheel on that axle.
+
+    INPUTS:
+      Wheels - the wheels (Adv. Entity Marker, Entities output), PROPer Tires tires
+      Seat   - the driver's seat: its driver sees the panel; the seat also tells the chip
+               where the front is
+      Base   - the vehicle's main plate: its speed is shown in the setup panel
+
+    Data comes from ent:getPropTireInfo() of the PROPer Tires addon (server side).
+    Temperature only rises if "Tire heating" is enabled on the tire; otherwise it stays at 20°C.
+    Grip coefficient μ is the tire's current friction: surface × tread × pressure ×
+    Grip slider × heating (peak tire force = μ × load); 0 in the air.
+]]
+
+local P = require("tire_hud_config.txt")
+if P.VERSION ~= 6 then
+    error("tire_hud: tire_hud_config.txt is version " .. tostring(P.VERSION) .. ", needs 6")
+end
+
+-- surfaces and treads by number (shorter over the network)
+local SURF = { "asphalt", "dirt", "sand", "grass", "snow", "metal", "wood", "water", "other" }
+local SURF_ID = {}
+for i, s in ipairs(SURF) do SURF_ID[s] = i end
+local TREADS = { "race", "sport", "dirt" }
+local TREAD_ID = { race = 1, sport = 2, dirt = 3 }
+
+if SERVER then
+    ---------------------------------------------------------------------------
+    -- SERVER
+    ---------------------------------------------------------------------------
+    wire.adjustPorts({ Wheels = "array", Seat = "entity", Base = "entity" }, {})
+
+    local S = { order = {}, rows = {}, seat = nil, base = nil, driver = nil }
+
+    local function say(s) print("[Tire HUD] " .. s) end
+
+    local function same(a, b)
+        return isValid(a) and isValid(b) and a:entIndex() == b:entIndex()
+    end
+
+    -- wheels into axles: forward from the seat, up from the world; axles front to back,
+    -- wheels in an axle left to right
+    local function layout(wheels, seat)
+        local fwd = seat:localToWorld(Vector(0, 1, 0)) - seat:getPos()
+        local up = Vector(0, 0, 1)
+        fwd = (fwd - up * fwd:dot(up)):getNormalized()
+        local left = up:cross(fwd)
+        local c = Vector()
+        for _, w in ipairs(wheels) do c = c + w:getPos() end
+        c = c / #wheels
+        local items = {}
+        for _, w in ipairs(wheels) do
+            local d = w:getPos() - c
+            items[#items + 1] = { ent = w, f = d:dot(fwd), s = d:dot(left) }
+        end
+        table.sort(items, function(a, b) return a.f > b.f end)
+        local rows = {}
+        for _, it in ipairs(items) do
+            local r = rows[#rows]
+            if not r or r.f - it.f > P.AXLE_TOL then
+                r = { f = it.f, list = {} }
+                rows[#rows + 1] = r
+            end
+            r.list[#r.list + 1] = it
+        end
+        local order, sizes = {}, {}
+        for _, r in ipairs(rows) do
+            table.sort(r.list, function(a, b) return a.s > b.s end)
+            for _, it in ipairs(r.list) do order[#order + 1] = it.ent end
+            sizes[#sizes + 1] = #r.list
+        end
+        return order, sizes
+    end
+
+    local function setDriver(new)
+        if isValid(S.driver) then pcall(enableHud, S.driver, false) end
+        S.driver = new
+        if new then pcall(enableHud, new, true) end
+    end
+
+    local function setup()
+        local W = wire.ports
+        S.seat = W.Seat
+        S.base = W.Base
+        if not isValid(S.base) then say("Base input is not wired - no speed") end
+        S.order, S.rows = {}, {}
+        local wheels = {}
+        if type(W.Wheels) == "table" then
+            for _, e in ipairs(W.Wheels) do
+                if isValid(e) then wheels[#wheels + 1] = e end
+            end
+        end
+        if not isValid(S.seat) then say("wire the Seat input") return end
+        if #wheels == 0 then say("wire the Wheels input (Adv. Entity Marker)") return end
+        if #wheels > 15 then
+            say(#wheels .. " wheels, showing the first 15")
+            for i = #wheels, 16, -1 do table.remove(wheels, i) end
+        end
+        S.order, S.rows = layout(wheels, S.seat)
+        local tires = 0
+        for _, w in ipairs(S.order) do
+            local ok, info = pcall(function() return w:getPropTireInfo() end)
+            if ok and info then tires = tires + 1 end
+        end
+        local r = {}
+        for _, n in ipairs(S.rows) do r[#r + 1] = n end
+        say(#S.order .. " wheels, " .. #S.rows .. " axles (per axle: " .. table.concat(r, ", ") .. "), PROPer Tires: " .. tires)
+        if tires == 0 then say("none of the wheels is a PROPer Tires tire (or the addon is not on the server)") end
+    end
+
+    -- wires arrive one by one (also after a dupe paste): set up half a second after the last one
+    hook.add("input", "tirehud_input", function()
+        timer.create("tirehud_setup", 0.5, 1, setup)
+    end)
+    timer.create("tirehud_setup", 0.5, 1, setup)
+
+    timer.create("tirehud_send", P.RATE, 0, function()
+        local drv = isValid(S.seat) and S.seat:getDriver() or nil
+        if not isValid(drv) then drv = nil end
+        if not same(drv, S.driver) and (drv or S.driver) then setDriver(drv) end
+        if not drv or #S.order == 0 or net.getBytesLeft() < 200 then return end
+
+        net.start("tirehud")
+        net.writeUInt(isValid(S.base) and S.base:entIndex() or 0, 16)
+        net.writeUInt(#S.rows, 4)
+        for _, n in ipairs(S.rows) do net.writeUInt(n, 4) end
+        for _, w in ipairs(S.order) do
+            local ok, info = false, nil
+            if isValid(w) then ok, info = pcall(function() return w:getPropTireInfo() end) end
+            if ok and info then
+                net.writeBool(true)
+                net.writeBool(info.onGround and true or false)
+                net.writeUInt(math.clamp(math.round(info.temp or 20), 0, 1023), 10)
+                net.writeUInt(math.clamp(math.round((info.skid or 0) * 100), 0, 100), 7)
+                net.writeUInt(SURF_ID[info.surface] or 0, 4)
+                net.writeUInt(TREAD_ID[info.tread] or 2, 2)
+                net.writeUInt(math.clamp(math.round((info.grip or 0) * 100), 0, 4095), 12)
+                net.writeUInt(math.clamp(math.round(info.gripSetting or 0), 0, 1023), 10)
+                net.writeUInt(math.clamp(math.round(info.pressure or 0), 0, 63), 6)
+            else
+                net.writeBool(false)
+            end
+        end
+        net.send(drv, true)
+    end)
+
+    hook.add("Removed", "tirehud_removed", function()
+        if isValid(S.driver) then pcall(enableHud, S.driver, false) end
+    end)
+
+else
+    ---------------------------------------------------------------------------
+    -- CLIENT (draws for the driver)
+    ---------------------------------------------------------------------------
+    local C = { rows = {}, cells = {}, t = -1, baseIdx = 0, base = nil }
+
+    net.receive("tirehud", function()
+        local idx = net.readUInt(16)
+        if idx ~= C.baseIdx then C.baseIdx, C.base = idx, nil end
+        local rows, cells = {}, {}
+        local nr = net.readUInt(4)
+        local total = 0
+        for i = 1, nr do
+            rows[i] = net.readUInt(4)
+            total = total + rows[i]
+        end
+        for i = 1, total do
+            if net.readBool() then
+                cells[i] = {
+                    ground = net.readBool(),
+                    temp = net.readUInt(10),
+                    skid = net.readUInt(7) / 100,
+                    surf = SURF[net.readUInt(4)],
+                    tread = TREADS[net.readUInt(2)] or "sport",
+                    mu = net.readUInt(12) / 100,
+                    gripSet = net.readUInt(10),
+                    pres = net.readUInt(6),
+                }
+            else
+                cells[i] = false
+            end
+        end
+        C.rows, C.cells, C.t = rows, cells, timer.curtime()
+    end)
+
+    -- style: dark panels, grey header strip, white text
+    local COL_MAIN   = Color(255, 255, 255, 240)
+    local COL_DIM    = Color(170, 170, 170, 230)
+    local COL_PANEL  = Color(0, 0, 0, 185)
+    local COL_HEADER = Color(48, 48, 48, 220)
+    local COL_CELL   = Color(255, 255, 255, 120)
+    local COL_WARN   = Color(255, 170, 60, 240)
+    local COL_BAD    = Color(255, 80, 80, 240)
+    local COL_BAR_BG = Color(255, 255, 255, 40)
+    local COL_FILL   = Color(16, 16, 16, 235)
+    local COL_SHADOW = Color(0, 0, 0, 170)
+
+    local FONT_SMALL, FONT_MED, FONT_BIG, FONT_SPEED
+    do
+        local okd, d = pcall(render.getDefaultFont)
+        d = okd and d or "DermaDefault"
+        local function mk(size, weight)
+            local ok, f = pcall(render.createFont, "Roboto", size, weight, true, false, false, false, 0, true)
+            return ok and f or d
+        end
+        FONT_SMALL = mk(P.FONT_SMALL, 600)
+        FONT_MED   = mk(P.FONT_MED, 700)
+        FONT_BIG   = mk(P.FONT_BIG, 800)
+        FONT_SPEED = mk(P.FONT_SPEED, 800)
+    end
+    local HEADER_H, HEADER_GAP, PAD = P.FONT_SMALL + 10, 2, 10
+
+    local function text(x, y, str, col, font, xa, ya)
+        render.setFont(font)
+        render.setColor(col)
+        render.drawSimpleText(x, y, str, xa or TEXT_ALIGN.LEFT, ya or TEXT_ALIGN.TOP)
+    end
+
+    -- height of an axle column of n cells (an even column gets the body gap in the middle)
+    local function colHeight(n)
+        local h = n * P.CELL_H + math.max(n - 1, 0) * P.GAP
+        if n >= 2 and n % 2 == 0 then h = h + P.BODY - P.GAP end
+        return h
+    end
+
+    -- forward arrow: shaft and a filled triangular head (drawn line by line), with a shadow
+    local function arrowShape(x1, x2, y, right, col, off)
+        local hw, head, half = P.ARROW_W / 2, P.ARROW_HEAD, P.ARROW_HALF
+        render.setColor(col)
+        if right then
+            render.drawRect(x1 + off, y - hw + off, x2 - head - x1, P.ARROW_W)
+            for dy = -half, half do
+                render.drawRect(x2 - head + off, y + dy + off, head * (1 - math.abs(dy) / half), 1)
+            end
+        else
+            render.drawRect(x1 + head + off, y - hw + off, x2 - head - x1, P.ARROW_W)
+            for dy = -half, half do
+                local len = head * (1 - math.abs(dy) / half)
+                render.drawRect(x1 + head - len + off, y + dy + off, len, 1)
+            end
+        end
+    end
+
+    local function arrow(x1, x2, y, right)
+        arrowShape(x1, x2, y, right, COL_SHADOW, 2)
+        arrowShape(x1, x2, y, right, COL_MAIN, 0)
+    end
+
+    local function cell(x, y, c)
+        local w, h = P.CELL_W, P.CELL_H
+        render.setColor(COL_FILL)
+        render.drawRect(x, y, w, h)
+        if not c then
+            render.setColor(COL_CELL)
+            render.drawRectOutline(x, y, w, h, 1)
+            text(x + w / 2, y + h / 2, P.NOT_TIRE, COL_DIM, FONT_SMALL, TEXT_ALIGN.CENTER, TEXT_ALIGN.CENTER)
+            return
+        end
+        local limit = P.HEAT_LIMIT[c.tread] or P.HEAT_LIMIT.sport
+        local over = c.temp - limit
+        local loss = math.round(P.HEAT_DROP * 100 * math.clamp(over / P.HEAT_SPAN, 0, 1))
+        local col = over > 0 and COL_BAD or (over > -P.HEAT_WARN and COL_WARN or COL_MAIN)
+        render.setColor(over > 0 and COL_BAD or COL_CELL)
+        render.drawRectOutline(x, y, w, h, over > 0 and 2 or 1)
+
+        -- temperature and grip lost to overheating
+        text(x + 10, y + 6, c.temp .. "°C", col, FONT_BIG)
+        if loss > 0 then
+            text(x + w - 10, y + 12, "-" .. loss .. "%", COL_BAD, FONT_SMALL, TEXT_ALIGN.RIGHT)
+        end
+        -- grip coefficient and surface
+        local my = y + 12 + P.FONT_BIG
+        text(x + 10, my, string.format("μ %.2f", c.mu), c.ground and COL_MAIN or COL_DIM, FONT_MED)
+        local surf = c.ground and (P.SURFACE[c.surf] or "") or P.AIRBORNE
+        text(x + w - 10, my + P.FONT_MED - P.FONT_SMALL, surf, COL_DIM, FONT_SMALL, TEXT_ALIGN.RIGHT)
+        -- skid bar
+        local bx, by, bw = x + 10, y + h - 14, w - 20
+        render.setColor(COL_BAR_BG)
+        render.drawRect(bx, by, bw, 6)
+        if c.skid > 0 then
+            render.setColor(COL_WARN)
+            render.drawRect(bx, by, bw * math.min(c.skid, 1), 6)
+        end
+    end
+
+    -- the same value on every tire - that value; different - P.MIXED; no tires - P.UNKNOWN
+    local function summary(field, fmt)
+        local v, mixed
+        for _, c in ipairs(C.cells) do
+            if c then
+                if v == nil then v = c[field] elseif v ~= c[field] then mixed = true end
+            end
+        end
+        if v == nil then return P.UNKNOWN end
+        if mixed then return P.MIXED end
+        return fmt(v)
+    end
+
+    local function frame(x, y, w, bodyH, title)
+        render.setColor(COL_HEADER)
+        render.drawRect(x, y, w, HEADER_H)
+        text(x + w / 2, y + HEADER_H / 2, title, COL_MAIN, FONT_SMALL, TEXT_ALIGN.CENTER, TEXT_ALIGN.CENTER)
+        local by = y + HEADER_H + HEADER_GAP
+        render.setColor(COL_PANEL)
+        render.drawRect(x, by, w, bodyH)
+        return by
+    end
+
+    -- speed of the Base plate in P.SPEED_UNIT (read on the client every frame); nil without a plate
+    local function speed()
+        if C.baseIdx == 0 then return nil end
+        if not isValid(C.base) then
+            local ok, e = pcall(entity, C.baseIdx)
+            C.base = (ok and isValid(e)) and e or nil
+            if not C.base then return nil end
+        end
+        return C.base:getVelocity():getLength() * P.SPEED_K
+    end
+
+    -- setup panel: speed on top, then three lines - label on the left, value on the right
+    local function setupFrame(x, y, bodyH)
+        local by = frame(x, y, P.SETUP_W, bodyH, P.SETUP_TITLE)
+        local v = speed()
+        local sy = by + PAD + P.FONT_SPEED / 2
+        text(x + P.SETUP_W / 2, sy, v and tostring(math.floor(v + 0.5)) or P.UNKNOWN, COL_MAIN, FONT_SPEED,
+             TEXT_ALIGN.CENTER, TEXT_ALIGN.CENTER)
+        text(x + P.SETUP_W / 2, sy + P.FONT_SPEED / 2 + 2, P.SPEED_UNIT, COL_DIM, FONT_SMALL, TEXT_ALIGN.CENTER, TEXT_ALIGN.TOP)
+        local top = sy + P.FONT_SPEED / 2 + P.FONT_SMALL + 10
+        render.setColor(COL_CELL)
+        render.drawRect(x + PAD, top - 4, P.SETUP_W - PAD * 2, 1)
+
+        local lines = {
+            { P.SETUP_GRIP, summary("gripSet", function(g) return g > 0 and (g .. "%") or P.UNKNOWN end) },
+            { P.SETUP_PRES, summary("pres", function(p) return p .. " PSI" end) },
+            { P.SETUP_TREAD, summary("tread", function(t) return P.TREAD_NAME[t] or t end) },
+        }
+        local step = (by + bodyH - top) / #lines
+        for k, l in ipairs(lines) do
+            local ly = top + step * (k - 0.5)
+            text(x + PAD + 4, ly, l[1], COL_DIM, FONT_SMALL, TEXT_ALIGN.LEFT, TEXT_ALIGN.CENTER)
+            text(x + P.SETUP_W - PAD - 4, ly, l[2], COL_MAIN, FONT_MED, TEXT_ALIGN.RIGHT, TEXT_ALIGN.CENTER)
+        end
+    end
+
+    hook.add("drawhud", "tirehud_draw", function()
+        if timer.curtime() - C.t > 1 or #C.rows == 0 then return end
+        local sw, sh = render.getGameResolution()
+        local na = #C.rows
+        local maxH = 0
+        for _, n in ipairs(C.rows) do maxH = math.max(maxH, colHeight(n)) end
+        local pw = na * P.CELL_W + (na - 1) * P.GAP + PAD * 2
+        -- at least as tall as the setup panel needs (speed + three lines); wheels centred
+        local setupMin = PAD * 2 + P.FONT_SPEED + P.FONT_SMALL + 12 + 3 * (P.FONT_MED + 12)
+        local bodyH = math.max(maxH + PAD * 2, setupMin)
+        maxH = bodyH - PAD * 2
+        local ph = HEADER_H + HEADER_GAP + bodyH
+        local total = pw + P.SIDE_GAP + P.SETUP_W
+        local x = math.clamp(sw * P.POS_X - total / 2, 0, math.max(sw - total, 0))
+        local y = sh - P.MARGIN - ph
+
+        setupFrame(x + pw + P.SIDE_GAP, y, bodyH)
+        local by = frame(x, y, pw, bodyH, P.TITLE)
+
+        -- forward arrow: halfway between the sides, full length; cells are drawn over it
+        arrow(x + PAD, x + pw - PAD, by + PAD + maxH / 2, P.FRONT_RIGHT)
+
+        -- axles are columns (the front one at the P.FRONT_RIGHT edge), left side on top
+        local i = 0
+        for a, n in ipairs(C.rows) do
+            local col = P.FRONT_RIGHT and (na - a) or (a - 1)
+            local cx = x + PAD + col * (P.CELL_W + P.GAP)
+            local cy = by + PAD + (maxH - colHeight(n)) / 2
+            for k = 1, n do
+                i = i + 1
+                cell(cx, cy, C.cells[i])
+                cy = cy + P.CELL_H + ((n % 2 == 0 and k == n / 2) and P.BODY or P.GAP)
+            end
+        end
+    end)
+end

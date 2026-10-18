@@ -1,0 +1,62 @@
+--@shared
+
+local P = {}
+
+P.VERSION = 6
+
+-- How often the server sends tire data to the driver, seconds
+P.RATE = 0.1
+
+-- Layout: wheels are grouped into axles automatically. Forward is where the Seat
+-- faces; wheels closer than this along the vehicle are one axle, units.
+-- Keep the vehicle level while wiring the chip
+P.AXLE_TOL = 20
+
+-- Tread heat limits and the overheat penalty, the same as in PROPer Tires:
+-- above the limit grip drops by up to HEAT_DROP over HEAT_SPAN °C
+P.HEAT_LIMIT = { race = 110, sport = 95, dirt = 80 }
+P.HEAT_DROP = 0.8
+P.HEAT_SPAN = 20
+P.HEAT_WARN = 15      -- temperature turns orange this many °C below the limit
+
+-- On-screen labels
+P.TITLE = "TIRES"
+P.NOT_TIRE = "not a tire"
+P.AIRBORNE = "airborne"
+P.SURFACE = {
+    asphalt = "asphalt", dirt = "dirt", sand = "sand", grass = "grass", snow = "snow",
+    metal = "metal", wood = "wood", water = "water", other = "other",
+}
+-- Setup panel to the right of the main one: grip slider, pressure, tread.
+-- Different values on different tires show P.MIXED; no data shows P.UNKNOWN
+P.SETUP_TITLE = "SETUP"
+P.SETUP_GRIP = "Grip"
+P.SETUP_PRES = "Pressure"
+P.SETUP_TREAD = "Tread"
+P.TREAD_NAME = { race = "Race", sport = "Sport", dirt = "Off-road" }
+P.MIXED = "mixed"
+P.UNKNOWN = "-"
+-- Speed of the main plate (Base input), shown at the top of the setup panel
+P.SPEED_UNIT = "km/h"
+P.SPEED_K = 1 / 10.9361   -- units/s -> km/h (1 unit = 1 inch, as in ACE); for mph use 1 / 17.6
+P.FONT_SPEED = 48         -- speed font size
+
+-- Panel layout: vehicle seen from above, lying on its side; axles are columns,
+-- the left side is the top row
+P.FRONT_RIGHT = true  -- front of the vehicle on the right (false - on the left)
+P.POS_X = 0.5         -- centre of both panels across the screen (0 - left edge, 1 - right edge)
+P.SETUP_W = 210       -- setup panel width
+P.SIDE_GAP = 12       -- gap between the panels
+P.MARGIN = 24         -- distance from the bottom of the screen, pixels
+P.CELL_W = 160        -- wheel cell size
+P.CELL_H = 92
+P.GAP = 8             -- gap between cells
+P.BODY = 44           -- gap between the left and right side (the body); the forward arrow is drawn in it
+P.ARROW_W = 6         -- forward arrow: shaft thickness
+P.ARROW_HEAD = 30     -- arrowhead length
+P.ARROW_HALF = 15     -- half of the arrowhead width
+P.FONT_BIG = 32       -- temperature
+P.FONT_MED = 24       -- grip coefficient
+P.FONT_SMALL = 17     -- labels
+
+return P
