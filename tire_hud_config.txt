@@ -2,7 +2,7 @@
 
 local P = {}
 
-P.VERSION = 6
+P.VERSION = 7
 
 -- How often the server sends tire data to the driver, seconds
 P.RATE = 0.1
@@ -14,7 +14,7 @@ P.AXLE_TOL = 20
 
 -- Tread heat limits and the overheat penalty, the same as in PROPer Tires:
 -- above the limit grip drops by up to HEAT_DROP over HEAT_SPAN °C
-P.HEAT_LIMIT = { race = 110, sport = 95, dirt = 80 }
+P.HEAT_LIMIT = { race = 110, sport = 95, dirt = 80, military = 120, mud = 75, slick = 120, drift = 100 }
 P.HEAT_DROP = 0.8
 P.HEAT_SPAN = 20
 P.HEAT_WARN = 15      -- temperature turns orange this many °C below the limit
@@ -33,7 +33,10 @@ P.SETUP_TITLE = "SETUP"
 P.SETUP_GRIP = "Grip"
 P.SETUP_PRES = "Pressure"
 P.SETUP_TREAD = "Tread"
-P.TREAD_NAME = { race = "Race", sport = "Sport", dirt = "Off-road" }
+P.TREAD_NAME = {
+    race = "Race", sport = "Sport", dirt = "Off-road",
+    military = "Military", mud = "Mud", slick = "Slick", drift = "Drift",
+}
 P.MIXED = "mixed"
 P.UNKNOWN = "-"
 -- Speed of the main plate (Base input), shown at the top of the setup panel

@@ -27,16 +27,17 @@
 ]]
 
 local P = require("tire_hud_config.txt")
-if P.VERSION ~= 6 then
-    error("tire_hud: tire_hud_config.txt is version " .. tostring(P.VERSION) .. ", needs 6")
+if P.VERSION ~= 7 then
+    error("tire_hud: tire_hud_config.txt is version " .. tostring(P.VERSION) .. ", needs 7")
 end
 
 -- surfaces and treads by number (shorter over the network)
 local SURF = { "asphalt", "dirt", "sand", "grass", "snow", "metal", "wood", "water", "other" }
 local SURF_ID = {}
 for i, s in ipairs(SURF) do SURF_ID[s] = i end
-local TREADS = { "race", "sport", "dirt" }
-local TREAD_ID = { race = 1, sport = 2, dirt = 3 }
+local TREADS = { "race", "sport", "dirt", "military", "mud", "slick", "drift" }
+local TREAD_ID = {}
+for i, t in ipairs(TREADS) do TREAD_ID[t] = i end
 
 if SERVER then
     ---------------------------------------------------------------------------
@@ -147,7 +148,7 @@ if SERVER then
                 net.writeUInt(math.clamp(math.round(info.temp or 20), 0, 1023), 10)
                 net.writeUInt(math.clamp(math.round((info.skid or 0) * 100), 0, 100), 7)
                 net.writeUInt(SURF_ID[info.surface] or 0, 4)
-                net.writeUInt(TREAD_ID[info.tread] or 2, 2)
+                net.writeUInt(TREAD_ID[info.tread] or 2, 3)
                 net.writeUInt(math.clamp(math.round((info.grip or 0) * 100), 0, 4095), 12)
                 net.writeUInt(math.clamp(math.round(info.gripSetting or 0), 0, 1023), 10)
                 net.writeUInt(math.clamp(math.round(info.pressure or 0), 0, 63), 6)
@@ -185,7 +186,7 @@ else
                     temp = net.readUInt(10),
                     skid = net.readUInt(7) / 100,
                     surf = SURF[net.readUInt(4)],
-                    tread = TREADS[net.readUInt(2)] or "sport",
+                    tread = TREADS[net.readUInt(3)] or "sport",
                     mu = net.readUInt(12) / 100,
                     gripSet = net.readUInt(10),
                     pres = net.readUInt(6),
