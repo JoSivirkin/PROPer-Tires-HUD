@@ -5,12 +5,13 @@ An example Starfall chip for the **PROPer Tires** Garry's Mod addon. It shows ti
 ## What it shows
 
 - **TIRES panel** — one cell per wheel, laid out like the wheels on the vehicle seen from above, with an arrow pointing forward. Wheels are grouped into axles automatically, up to 15 wheels.
-- **In every cell:** temperature (orange near the tread's limit, red above it, with the grip loss in %), grip coefficient μ, surface (or "airborne") and a skid bar.
+- **In every cell:** temperature (blue while the tire is cold, orange near the tread's limit, red above it, with the grip lost to temperature in %), "warmer" while a tire warmer is on, grip coefficient μ, surface (or "airborne") and a skid bar.
 - **SETUP panel** — speed in km/h, the Grip slider value, pressure and tread. If tires have different settings, the line says "mixed".
+- **WARMER panel** (left) — tire warmers. The driver sets the target with the **Up / Down arrow keys**: OFF, 30°C, 40°C … 120°C. The panel shows the target and the status: off, heating disabled (Tire heating is off on the tires), moving (warmers only work standing still), heating, ready. The chip owner must own the wheels.
 
 ## Requirements
 
-- PROPer Tires on the server.
+- PROPer Tires on the server (with the heat curves update; older versions show no heat colours).
 - StarfallEx.
 - Wiremod's **Adv. Entity Marker** to link the wheels.
 
@@ -32,6 +33,7 @@ Everything is in `tire_hud_config.txt`: panel position and size, fonts, which si
 ## Notes
 
 - Temperature stays at 20°C unless **Tire heating** is enabled on the tire.
+- Tires are only "cold" with the **Warm-up + overheat** heat model.
 - The forward arrow is drawn between the left and right wheels, so it looks best when every axle has two wheels.
 
 ## Reading tires in your own chip
@@ -46,4 +48,11 @@ if info then
 end
 ```
 
-Fields: `onGround`, `load`, `slip`, `slipAngle`, `skid`, `force`, `grip`, `surface`, `wheelSpeed`, `groundSpeed`, `temp`, `radius`, `width`, `pressure`, `tread`, `gripSetting`.
+Fields: `onGround`, `load`, `slip`, `slipAngle`, `skid`, `force`, `grip`, `surface`, `wheelSpeed`, `groundSpeed`, `temp`, `heating`, `heatModel`, `heatLimit`, `heatWindow`, `heatGrip`, `warmer`, `radius`, `width`, `pressure`, `tread`, `gripSetting`.
+
+Tire warmers (only your own tires, only while standing still):
+
+```lua
+--@server
+wheel:setPropTireWarmer(90) -- heat towards 90°C; 0 switches it off
+```

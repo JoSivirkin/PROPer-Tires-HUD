@@ -20,15 +20,21 @@
                where the front is
       Base   - the vehicle's main plate: its speed is shown in the setup panel
 
-    Data comes from ent:getPropTireInfo() of the PROPer Tires addon (server side).
+    Data comes from ent:getPropTireInfo() of the PROPer Tires addon (server side, V68+).
     Temperature only rises if "Tire heating" is enabled on the tire; otherwise it stays at 20°C.
+    Temperature is blue while the tire is cold (below its working window), orange near
+    the heat limit and red above it; -N% is the grip lost to temperature (cold or hot);
+    P.WARMER is shown while a tire warmer is on.
+    Tire warmers: the driver sets the target temperature with P.KEY_WARM_UP / DOWN; the
+    WARMER panel left of TIRES shows the target and the status (off, heating disabled,
+    moving, heating, ready). The chip owner must own the wheels.
     Grip coefficient μ is the tire's current friction: surface × tread × pressure ×
     Grip slider × heating (peak tire force = μ × load); 0 in the air.
 ]]
 
 local P = require("tire_hud_config.txt")
-if P.VERSION ~= 7 then
-    error("tire_hud: tire_hud_config.txt is version " .. tostring(P.VERSION) .. ", needs 7")
+if P.VERSION ~= 10 then
+    error("tire_hud: tire_hud_config.txt is version " .. tostring(P.VERSION) .. ", needs 10")
 end
 
 -- surfaces and treads by number (shorter over the network)
@@ -45,13 +51,33 @@ if SERVER then
     ---------------------------------------------------------------------------
     wire.adjustPorts({ Wheels = "array", Seat = "entity", Base = "entity" }, {})
 
-    local S = { order = {}, rows = {}, seat = nil, base = nil, driver = nil }
+    local S = { order = {}, rows = {}, seat = nil, base = nil, driver = nil, warm = 0 }
 
     local function say(s) print("[Tire HUD] " .. s) end
 
     local function same(a, b)
         return isValid(a) and isValid(b) and a:entIndex() == b:entIndex()
     end
+
+    -- tire warmers: the same target on every wheel (0 - off)
+    local function applyWarm()
+        local failed = false
+        for _, w in ipairs(S.order) do
+            if isValid(w) then
+                local ok = pcall(function() w:setPropTireWarmer(S.warm) end)
+                if not ok then failed = true end
+            end
+        end
+        if failed then say("could not set tire warmers (needs PROPer Tires V68+ and wheels owned by the chip owner)") end
+    end
+
+    net.receive("tirehud_warm", function(len, ply)
+        if not same(ply, S.driver) then return end
+        local v = net.readUInt(8)
+        if v ~= 0 then v = math.clamp(v, P.WARM_MIN, P.WARM_MAX) end
+        S.warm = v
+        applyWarm()
+    end)
 
     -- wheels into axles: forward from the seat, up from the world; axles front to back,
     -- wheels in an axle left to right
@@ -112,15 +138,20 @@ if SERVER then
             for i = #wheels, 16, -1 do table.remove(wheels, i) end
         end
         S.order, S.rows = layout(wheels, S.seat)
-        local tires = 0
+        local tires, old = 0, false
         for _, w in ipairs(S.order) do
             local ok, info = pcall(function() return w:getPropTireInfo() end)
-            if ok and info then tires = tires + 1 end
+            if ok and info then
+                tires = tires + 1
+                if info.heatGrip == nil then old = true end
+            end
         end
         local r = {}
         for _, n in ipairs(S.rows) do r[#r + 1] = n end
         say(#S.order .. " wheels, " .. #S.rows .. " axles (per axle: " .. table.concat(r, ", ") .. "), PROPer Tires: " .. tires)
         if tires == 0 then say("none of the wheels is a PROPer Tires tire (or the addon is not on the server)") end
+        if old then say("PROPer Tires on the server is older than V68 - no heat colours") end
+        if S.warm > 0 then applyWarm() end
     end
 
     -- wires arrive one by one (also after a dupe paste): set up half a second after the last one
@@ -137,6 +168,7 @@ if SERVER then
 
         net.start("tirehud")
         net.writeUInt(isValid(S.base) and S.base:entIndex() or 0, 16)
+        net.writeUInt(S.warm, 8)
         net.writeUInt(#S.rows, 4)
         for _, n in ipairs(S.rows) do net.writeUInt(n, 4) end
         for _, w in ipairs(S.order) do
@@ -152,6 +184,11 @@ if SERVER then
                 net.writeUInt(math.clamp(math.round((info.grip or 0) * 100), 0, 4095), 12)
                 net.writeUInt(math.clamp(math.round(info.gripSetting or 0), 0, 1023), 10)
                 net.writeUInt(math.clamp(math.round(info.pressure or 0), 0, 63), 6)
+                net.writeBool(info.heating and true or false)
+                net.writeUInt(math.clamp(math.round((info.heatGrip or 1) * 100), 0, 100), 7)
+                net.writeUInt(math.clamp(math.round(info.heatLimit or 1023), 0, 1023), 10)
+                net.writeUInt(math.clamp(math.round(info.heatWindow or 0), 0, 1023), 10)
+                net.writeBool((info.warmer or 0) > 0)
             else
                 net.writeBool(false)
             end
@@ -161,17 +198,24 @@ if SERVER then
 
     hook.add("Removed", "tirehud_removed", function()
         if isValid(S.driver) then pcall(enableHud, S.driver, false) end
+        if S.warm > 0 then
+            S.warm = 0
+            applyWarm()
+        end
     end)
 
 else
     ---------------------------------------------------------------------------
     -- CLIENT (draws for the driver)
     ---------------------------------------------------------------------------
-    local C = { rows = {}, cells = {}, t = -1, baseIdx = 0, base = nil }
+    local C = { rows = {}, cells = {}, t = -1, baseIdx = 0, base = nil, warm = 0, warmT = -1 }
 
     net.receive("tirehud", function()
         local idx = net.readUInt(16)
         if idx ~= C.baseIdx then C.baseIdx, C.base = idx, nil end
+        local warm = net.readUInt(8)
+        -- right after a key press the server may not have the new target yet
+        if timer.curtime() - C.warmT > 0.5 then C.warm = warm end
         local rows, cells = {}, {}
         local nr = net.readUInt(4)
         local total = 0
@@ -190,6 +234,11 @@ else
                     mu = net.readUInt(12) / 100,
                     gripSet = net.readUInt(10),
                     pres = net.readUInt(6),
+                    heating = net.readBool(),
+                    hgrip = net.readUInt(7) / 100,
+                    limit = net.readUInt(10),
+                    window = net.readUInt(10),
+                    warmer = net.readBool(),
                 }
             else
                 cells[i] = false
@@ -206,6 +255,7 @@ else
     local COL_CELL   = Color(255, 255, 255, 120)
     local COL_WARN   = Color(255, 170, 60, 240)
     local COL_BAD    = Color(255, 80, 80, 240)
+    local COL_COLD   = Color(90, 170, 255, 240)
     local COL_BAR_BG = Color(255, 255, 255, 40)
     local COL_FILL   = Color(16, 16, 16, 235)
     local COL_SHADOW = Color(0, 0, 0, 170)
@@ -271,17 +321,20 @@ else
             text(x + w / 2, y + h / 2, P.NOT_TIRE, COL_DIM, FONT_SMALL, TEXT_ALIGN.CENTER, TEXT_ALIGN.CENTER)
             return
         end
-        local limit = P.HEAT_LIMIT[c.tread] or P.HEAT_LIMIT.sport
-        local over = c.temp - limit
-        local loss = math.round(P.HEAT_DROP * 100 * math.clamp(over / P.HEAT_SPAN, 0, 1))
-        local col = over > 0 and COL_BAD or (over > -P.HEAT_WARN and COL_WARN or COL_MAIN)
+        local over = c.temp - c.limit
+        local cold = c.heating and c.temp < c.window
+        local loss = math.round((1 - c.hgrip) * 100)
+        local col = over > 0 and COL_BAD or (over > -P.HEAT_WARN and COL_WARN or (cold and COL_COLD or COL_MAIN))
         render.setColor(over > 0 and COL_BAD or COL_CELL)
         render.drawRectOutline(x, y, w, h, over > 0 and 2 or 1)
 
-        -- temperature and grip lost to overheating
+        -- temperature, grip lost to temperature, tire warmer
         text(x + 10, y + 6, c.temp .. "°C", col, FONT_BIG)
         if loss > 0 then
-            text(x + w - 10, y + 12, "-" .. loss .. "%", COL_BAD, FONT_SMALL, TEXT_ALIGN.RIGHT)
+            text(x + w - 10, y + 6, "-" .. loss .. "%", over > 0 and COL_BAD or COL_COLD, FONT_SMALL, TEXT_ALIGN.RIGHT)
+        end
+        if c.warmer then
+            text(x + w - 10, y + 8 + P.FONT_SMALL, P.WARMER, COL_WARN, FONT_SMALL, TEXT_ALIGN.RIGHT)
         end
         -- grip coefficient and surface
         local my = y + 12 + P.FONT_BIG
@@ -357,6 +410,58 @@ else
         end
     end
 
+    -- warmer keys: only the driver gets data, so only the driver can change the target.
+    -- One press can arrive more than once (prediction), so react to the first one only
+    local pressed = {}
+    hook.add("inputPressed", "tirehud_keys", function(key)
+        if pressed[key] then return end
+        pressed[key] = true
+        if timer.curtime() - C.t > 1 then return end
+        local v = C.warm
+        if key == P.KEY_WARM_UP then
+            v = v == 0 and P.WARM_MIN or math.min(v + P.WARM_STEP, P.WARM_MAX)
+        elseif key == P.KEY_WARM_DOWN then
+            v = v <= P.WARM_MIN and 0 or v - P.WARM_STEP
+        end
+        if v == C.warm then return end
+        C.warm, C.warmT = v, timer.curtime()
+        net.start("tirehud_warm")
+        net.writeUInt(v, 8)
+        net.send()
+    end)
+    hook.add("inputReleased", "tirehud_keys", function(key)
+        pressed[key] = nil
+    end)
+
+    -- warmer status from the tires the server sent
+    local function warmStatus(v)
+        if C.warm == 0 then return "off", COL_DIM end
+        local heating, ready = false, true
+        for _, c in ipairs(C.cells) do
+            if c and c.heating then
+                heating = true
+                if c.temp < math.min(C.warm, c.limit) - 1 then ready = false end
+            end
+        end
+        if not heating then return "noheat", COL_BAD end
+        if v and v > P.WARM_STAND then return "moving", COL_BAD end
+        if ready then return "ready", COL_MAIN end
+        return "heating", COL_WARN
+    end
+
+    -- warmer panel: target temperature on top, status below, hint and keys at the bottom
+    local function warmFrame(x, y, bodyH)
+        local by = frame(x, y, P.WARM_W, bodyH, P.WARM_TITLE)
+        local st, col = warmStatus(speed())
+        local cy = by + bodyH / 2
+        text(x + P.WARM_W / 2, cy - P.FONT_SMALL, C.warm > 0 and (C.warm .. "°C") or P.WARM_OFF,
+             C.warm > 0 and COL_MAIN or COL_DIM, FONT_SPEED, TEXT_ALIGN.CENTER, TEXT_ALIGN.CENTER)
+        text(x + P.WARM_W / 2, cy + P.FONT_SPEED / 2, P.WARM_STATUS[st] or st, col, FONT_SMALL,
+             TEXT_ALIGN.CENTER, TEXT_ALIGN.CENTER)
+        text(x + P.WARM_W / 2, by + bodyH - PAD - P.FONT_SMALL - 2, P.WARM_HINT, COL_DIM, FONT_SMALL, TEXT_ALIGN.CENTER, TEXT_ALIGN.BOTTOM)
+        text(x + P.WARM_W / 2, by + bodyH - PAD, P.WARM_KEYS, COL_DIM, FONT_SMALL, TEXT_ALIGN.CENTER, TEXT_ALIGN.BOTTOM)
+    end
+
     hook.add("drawhud", "tirehud_draw", function()
         if timer.curtime() - C.t > 1 or #C.rows == 0 then return end
         local sw, sh = render.getGameResolution()
@@ -369,10 +474,12 @@ else
         local bodyH = math.max(maxH + PAD * 2, setupMin)
         maxH = bodyH - PAD * 2
         local ph = HEADER_H + HEADER_GAP + bodyH
-        local total = pw + P.SIDE_GAP + P.SETUP_W
+        local total = P.WARM_W + P.SIDE_GAP + pw + P.SIDE_GAP + P.SETUP_W
         local x = math.clamp(sw * P.POS_X - total / 2, 0, math.max(sw - total, 0))
         local y = sh - P.MARGIN - ph
 
+        warmFrame(x, y, bodyH)
+        x = x + P.WARM_W + P.SIDE_GAP
         setupFrame(x + pw + P.SIDE_GAP, y, bodyH)
         local by = frame(x, y, pw, bodyH, P.TITLE)
 

@@ -2,7 +2,7 @@
 
 local P = {}
 
-P.VERSION = 7
+P.VERSION = 10
 
 -- How often the server sends tire data to the driver, seconds
 P.RATE = 0.1
@@ -12,17 +12,16 @@ P.RATE = 0.1
 -- Keep the vehicle level while wiring the chip
 P.AXLE_TOL = 20
 
--- Tread heat limits and the overheat penalty, the same as in PROPer Tires:
--- above the limit grip drops by up to HEAT_DROP over HEAT_SPAN °C
-P.HEAT_LIMIT = { race = 110, sport = 95, dirt = 80, military = 120, mud = 75, slick = 120, drift = 100 }
-P.HEAT_DROP = 0.8
-P.HEAT_SPAN = 20
-P.HEAT_WARN = 15      -- temperature turns orange this many °C below the limit
+-- Heat limits, the working window and the grip lost to temperature come from
+-- PROPer Tires (V68+). Temperature colours: blue - cold (below the working window,
+-- "Warm-up + overheat" model), orange - this many °C below the limit, red - over it
+P.HEAT_WARN = 15
 
 -- On-screen labels
 P.TITLE = "TIRES"
 P.NOT_TIRE = "not a tire"
 P.AIRBORNE = "airborne"
+P.WARMER = "warmer"   -- tire warmer switched on (E2 / Starfall)
 P.SURFACE = {
     asphalt = "asphalt", dirt = "dirt", sand = "sand", grass = "grass", snow = "snow",
     metal = "metal", wood = "wood", water = "water", other = "other",
@@ -39,6 +38,25 @@ P.TREAD_NAME = {
 }
 P.MIXED = "mixed"
 P.UNKNOWN = "-"
+-- Tire warmers: the driver sets the target with the keys below, OFF -> WARM_MIN ->
+-- ... -> WARM_MAX in WARM_STEP °C; below WARM_MIN switches them off. They work only
+-- while the vehicle stands still and "Tire heating" is on. Status panel left of TIRES
+P.KEY_WARM_UP = KEY.UP
+P.KEY_WARM_DOWN = KEY.DOWN
+P.WARM_MIN = 30
+P.WARM_MAX = 120
+P.WARM_STEP = 10
+P.WARM_STAND = 1          -- faster than this (km/h, Base speed) the warmers do not work
+P.WARM_TITLE = "WARMER"
+P.WARM_W = 170            -- warmer panel width
+P.WARM_OFF = "OFF"
+P.WARM_KEYS = "UP / DOWN"
+P.WARM_HINT = "standing still only"   -- always shown above the keys
+P.WARM_STATUS = {
+    off = "off", noheat = "heating disabled", moving = "paused: moving",
+    heating = "heating", ready = "ready",
+}
+
 -- Speed of the main plate (Base input), shown at the top of the setup panel
 P.SPEED_UNIT = "km/h"
 P.SPEED_K = 1 / 10.9361   -- units/s -> km/h (1 unit = 1 inch, as in ACE); for mph use 1 / 17.6
